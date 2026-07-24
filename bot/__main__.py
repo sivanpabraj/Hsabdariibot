@@ -142,9 +142,13 @@ def build_app() -> Application:
 
 
 def main() -> None:
+    """Run a classic long-polling bot against api.telegram.org (no local Bot API server)."""
     app = build_app()
-    logger.info("Bot starting...")
-    app.run_polling(allowed_updates=["message", "callback_query"])
+    logger.info("Bot starting with simple polling (no webhook / no local Telegram server)...")
+    app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query"],
+    )
 
 
 if __name__ == "__main__":
