@@ -5,6 +5,7 @@ from __future__ import annotations
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 
 from bot.db.database import Transaction
+from bot.services.categories import CATEGORY_LABELS, categories_for, category_label
 from bot.services.receipt_parser import format_jalali, format_money, month_title
 
 TYPE_LABEL = {"deposit": "واریز", "withdraw": "برداشت"}
@@ -15,8 +16,8 @@ def main_keyboard() -> ReplyKeyboardMarkup:
         [
             ["➕ واریز دستی", "➖ برداشت دستی"],
             ["📷 ثبت با رسید", "📊 گزارش ماه"],
-            ["📋 آخرین تراکنش‌ها", "🏦 حساب‌ها"],
-            ["❓ راهنما"],
+            ["📋 آخرین تراکنش‌ها", "🏷 دسته‌ها"],
+            ["🏦 حساب‌ها", "❓ راهنما"],
         ],
         resize_keyboard=True,
     )
@@ -24,6 +25,21 @@ def main_keyboard() -> ReplyKeyboardMarkup:
 
 def cancel_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup([["❌ انصراف"]], resize_keyboard=True)
+
+
+def category_keyboard(tx_type: str) -> InlineKeyboardMarkup:
+    cats = categories_for(tx_type)
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for key, label in cats:
+        row.append(InlineKeyboardButton(label, callback_data=f"cat:{key}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("❌ انصراف", callback_data="rcancel")])
+    return InlineKeyboardMarkup(rows)
 
 
 def type_confirm_keyboard() -> InlineKeyboardMarkup:
@@ -46,9 +62,10 @@ def receipt_confirm_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("✏️ اصلاح مبلغ", callback_data="redit_amount"),
             ],
             [
+                InlineKeyboardButton("🏷 تغییر دسته", callback_data="rcat"),
                 InlineKeyboardButton("🔄 عوض کردن نوع", callback_data="rswitch"),
-                InlineKeyboardButton("❌ انصراف", callback_data="rcancel"),
             ],
+            [InlineKeyboardButton("❌ انصراف", callback_data="rcancel")],
         ]
     )
 
@@ -57,22 +74,10 @@ def months_keyboard(months: list[tuple[int, int]]) -> InlineKeyboardMarkup:
     rows = []
     for y, m in months:
         rows.append(
-            [
-                InlineKeyboardButton(
-                    month_title(y, m), callback_data=f"month:{y}:{m}"
-                )
-            ]
+            [InlineKeyboardButton(month_title(y, m), callback_data=f"month:{y}:{m}")]
         )
-    rows.append(
-        [InlineKeyboardButton("📅 ماه جاری", callback_data="month:current")]
-    )
+    rows.append([InlineKeyboardButton("📅 ماه جاری", callback_data="month:current")])
     return InlineKeyboardMarkup(rows)
-
-
-def delete_tx_keyboard(tx_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🗑 حذف", callback_data=f"del:{tx_id}")]]
-    )
 
 
 def format_tx_line(tx: Transaction) -> str:
@@ -83,11 +88,12 @@ def format_tx_line(tx: Transaction) -> str:
         jm=tx.jalali_month,
         jd=int(tx.transaction_date.split("-")[2]) if tx.transaction_date else None,
     )
+    cat = category_label(getattr(tx, "category", "") or "")
     desc = f" — {tx.description}" if tx.description else ""
     src = "📷" if tx.source == "receipt" else "✍️"
     return (
         f"{emoji} #{tx.id} {kind} {format_money(tx.amount)}\n"
-        f"   {src} {tx.account_name} | {date_str}{desc}"
+        f"   🏷 {cat} | {src} {tx.account_name} | {date_str}{desc}"
     )
 
 
@@ -100,6 +106,28 @@ def format_monthly_report(summary: dict) -> str:
         f"🔴 برداشت: {format_money(summary['withdraw'])} ({summary['withdraw_count']} مورد)",
         f"⚖️ مانده ماه: {format_money(summary['balance'])}",
     ]
+
+    expense_cats = [c for c in summary.get("categories", []) if c["type"] == "withdraw"]
+    income_cats = [c for c in summary.get("categories", []) if c["type"] == "deposit"]
+
+    if expense_cats:
+        lines.append("")
+        lines.append("🧾 مخارج به تفکیک دسته:")
+        for c in expense_cats:
+            label = category_label(c["category"])
+            if c["category"] in ("other", ""):
+                label = "سایر / بدون دسته"
+            lines.append(f"• {label}: {format_money(c['total'])} ({c['count']} مورد)")
+
+    if income_cats:
+        lines.append("")
+        lines.append("💰 درآمد به تفکیک دسته:")
+        for c in income_cats:
+            label = category_label(c["category"])
+            if c["category"] in ("other", ""):
+                label = "سایر / بدون دسته"
+            lines.append(f"• {label}: {format_money(c['total'])} ({c['count']} مورد)")
+
     if summary.get("accounts"):
         lines.append("")
         lines.append("🏦 به تفکیک حساب:")
@@ -112,25 +140,40 @@ def format_monthly_report(summary: dict) -> str:
     return "\n".join(lines)
 
 
+def categories_help_text() -> str:
+    expense = "\n".join(f"• {label}" for _, label in categories_for("withdraw"))
+    income = "\n".join(f"• {label}" for _, label in categories_for("deposit"))
+    return (
+        "🏷 دسته‌های حسابداری شخصی\n\n"
+        "🔴 هزینه‌ها:\n"
+        f"{expense}\n\n"
+        "🟢 درآمدها:\n"
+        f"{income}\n\n"
+        "موقع ثبت واریز/برداشت یا رسید، دسته را انتخاب کنید.\n"
+        "در گزارش ماه، جمع هر دسته جدا نشان داده می‌شود."
+    )
+
+
 def help_text() -> str:
     return (
         "📒 ربات حسابداری شخصی\n\n"
-        "با این ربات درآمد و هزینه‌های خودتان را ثبت و ماهانه جمع‌بندی کنید.\n\n"
+        "درآمد و هزینه‌ها را با دسته ثبت کنید:\n"
+        "بنزین، مخارج منزل، اجاره خانه/دفتر، آب، برق، گاز و …\n\n"
         "امکانات:\n"
-        "• واریز و برداشت دستی\n"
-        "• خواندن عکس/متن رسید بانکی با هوش مصنوعی\n"
-        "• چند حساب جدا\n"
-        "• گزارش ماهانه شمسی\n\n"
-        "دستورهای سریع:\n"
+        "• واریز و برداشت دستی + انتخاب دسته\n"
+        "• خواندن رسید بانکی با هوش مصنوعی\n"
+        "• گزارش ماهانه به‌تفکیک دسته و حساب\n\n"
+        "دستورها:\n"
         "/deposit مبلغ [توضیح]\n"
         "/withdraw مبلغ [توضیح]\n"
         "/report\n"
-        "/report 1404 4\n"
         "/list\n"
         "/accounts\n"
-        "/newaccount نام\n"
+        "/categories\n"
         "/delete شماره\n\n"
-        "مبلغ را به تومان وارد کنید.\n"
-        "مثال: 150000 یا 1.5 میلیون\n"
-        "برای ریال بنویسید: 1500000 ریال"
+        "مبلغ پیش‌فرض تومان است. مثال: 150000 یا 1.5 میلیون"
     )
+
+
+# silence unused import warning if CATEGORY_LABELS only used indirectly
+_ = CATEGORY_LABELS

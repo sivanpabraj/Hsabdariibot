@@ -17,8 +17,8 @@ from telegram.ext import (
 from bot.config import BOT_TOKEN
 from bot.db.database import Database
 from bot.handlers import manual, receipt, reports, start
-from bot.handlers.manual import ASK_ACCOUNT, ASK_AMOUNT, ASK_DESC, ASK_NEW_ACCOUNT
-from bot.handlers.receipt import CONFIRM, EDIT_AMOUNT, WAIT_RECEIPT
+from bot.handlers.manual import ASK_ACCOUNT, ASK_AMOUNT, ASK_CATEGORY, ASK_DESC, ASK_NEW_ACCOUNT
+from bot.handlers.receipt import CONFIRM, EDIT_AMOUNT, PICK_CATEGORY, WAIT_RECEIPT
 
 logging.basicConfig(
     format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
@@ -62,6 +62,9 @@ def build_app() -> Application:
         ],
         states={
             ASK_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_amount)],
+            ASK_CATEGORY: [
+                CallbackQueryHandler(manual.manual_category_callback, pattern=r"^(cat:|rcancel$)")
+            ],
             ASK_DESC: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_desc),
                 CommandHandler("skip", manual.manual_desc),
@@ -93,7 +96,15 @@ def build_app() -> Application:
                 MessageHandler(filters.Document.IMAGE, receipt.receipt_photo),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receipt.receipt_photo),
             ],
-            CONFIRM: [CallbackQueryHandler(receipt.receipt_callbacks, pattern=r"^(rok|redit_amount|rswitch|rcancel|rtype:)")],
+            CONFIRM: [
+                CallbackQueryHandler(
+                    receipt.receipt_callbacks,
+                    pattern=r"^(rok|redit_amount|rswitch|rcancel|rcat|rtype:|cat:)",
+                )
+            ],
+            PICK_CATEGORY: [
+                CallbackQueryHandler(receipt.receipt_callbacks, pattern=r"^(cat:|rcancel$)")
+            ],
             EDIT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receipt.edit_amount_text)],
         },
         fallbacks=[
@@ -131,6 +142,8 @@ def build_app() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"^📋 آخرین تراکنش‌ها$"), manual.list_transactions))
     app.add_handler(CommandHandler("accounts", manual.accounts_list))
     app.add_handler(MessageHandler(filters.Regex(r"^🏦 حساب‌ها$"), manual.accounts_list))
+    app.add_handler(CommandHandler("categories", manual.categories_list))
+    app.add_handler(MessageHandler(filters.Regex(r"^🏷 دسته‌ها$"), manual.categories_list))
     app.add_handler(CommandHandler("delete", manual.delete_command))
     app.add_handler(CallbackQueryHandler(manual.delete_callback, pattern=r"^del:\d+$"))
 

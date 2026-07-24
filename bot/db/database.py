@@ -31,6 +31,7 @@ class Transaction:
     type: str  # deposit | withdraw
     amount: int  # Rials (integer)
     description: str
+    category: str
     source: str  # manual | receipt
     receipt_text: str
     transaction_date: str  # YYYY-MM-DD (Gregorian)
@@ -80,6 +81,7 @@ class Database:
                 type TEXT NOT NULL CHECK(type IN ('deposit', 'withdraw')),
                 amount INTEGER NOT NULL CHECK(amount > 0),
                 description TEXT NOT NULL DEFAULT '',
+                category TEXT NOT NULL DEFAULT '',
                 source TEXT NOT NULL DEFAULT 'manual',
                 receipt_text TEXT NOT NULL DEFAULT '',
                 transaction_date TEXT NOT NULL,
@@ -94,6 +96,16 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_tx_account
                 ON transactions(account_id);
             """
+        )
+        # Migrate older DBs that lack category column
+        cols = await self.db.execute_fetchall("PRAGMA table_info(transactions)")
+        names = {r["name"] for r in cols}
+        if "category" not in names:
+            await self.db.execute(
+                "ALTER TABLE transactions ADD COLUMN category TEXT NOT NULL DEFAULT ''"
+            )
+        await self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tx_category ON transactions(user_id, category)"
         )
         await self.db.commit()
 
@@ -148,6 +160,7 @@ class Database:
         tx_type: str,
         amount: int,
         description: str = "",
+        category: str = "",
         source: str = "manual",
         receipt_text: str = "",
         transaction_date: str,
@@ -161,9 +174,9 @@ class Database:
         cur = await self.db.execute(
             """
             INSERT INTO transactions (
-                user_id, account_id, type, amount, description, source,
+                user_id, account_id, type, amount, description, category, source,
                 receipt_text, transaction_date, jalali_year, jalali_month, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -171,6 +184,7 @@ class Database:
                 tx_type,
                 amount,
                 description.strip(),
+                category.strip(),
                 source,
                 receipt_text,
                 transaction_date,
@@ -194,7 +208,9 @@ class Database:
         )
         if not rows:
             raise ValueError("تراکنش پیدا نشد")
-        return Transaction(**dict(rows[0]))
+        data = dict(rows[0])
+        data.setdefault("category", "")
+        return Transaction(**data)
 
     async def delete_transaction(self, tx_id: int, user_id: int) -> bool:
         cur = await self.db.execute(
@@ -231,7 +247,12 @@ class Database:
                 """,
                 (user_id, limit),
             )
-        return [Transaction(**dict(r)) for r in rows]
+        result = []
+        for r in rows:
+            data = dict(r)
+            data.setdefault("category", "")
+            result.append(Transaction(**data))
+        return result
 
     async def monthly_summary(
         self,
@@ -298,6 +319,31 @@ class Database:
                 accounts[aid]["withdraw"] = int(r["total"] or 0)
                 accounts[aid]["withdraw_count"] = int(r["cnt"] or 0)
 
+        by_cat_rows = await self.db.execute_fetchall(
+            f"""
+            SELECT
+                CASE WHEN category IS NULL OR category = '' THEN 'other' ELSE category END AS category,
+                type,
+                SUM(amount) AS total,
+                COUNT(*) AS cnt
+            FROM transactions
+            WHERE user_id = ? AND jalali_year = ? AND jalali_month = ?{account_filter}
+            GROUP BY category, type
+            ORDER BY total DESC
+            """,
+            params,
+        )
+        categories: list[dict[str, Any]] = []
+        for r in by_cat_rows:
+            categories.append(
+                {
+                    "category": r["category"],
+                    "type": r["type"],
+                    "total": int(r["total"] or 0),
+                    "count": int(r["cnt"] or 0),
+                }
+            )
+
         return {
             "year": jalali_year,
             "month": jalali_month,
@@ -307,6 +353,7 @@ class Database:
             "withdraw_count": withdraw_count,
             "balance": deposit - withdraw,
             "accounts": list(accounts.values()),
+            "categories": categories,
         }
 
     async def list_months(self, user_id: int, limit: int = 12) -> list[tuple[int, int]]:

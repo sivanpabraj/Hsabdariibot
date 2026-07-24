@@ -62,6 +62,17 @@ class ParseReceiptTests(unittest.TestCase):
         ) or format_money(1_500_000))
 
 
+class CategoryGuessTests(unittest.TestCase):
+    def test_guess_fuel_and_utilities(self):
+        from bot.services.categories import guess_category_from_text
+
+        self.assertEqual(guess_category_from_text("بنزین جایگاه", "withdraw"), "fuel")
+        self.assertEqual(guess_category_from_text("قبض برق", "withdraw"), "electricity")
+        self.assertEqual(guess_category_from_text("اجاره خانه", "withdraw"), "rent_home")
+        self.assertEqual(guess_category_from_text("اجاره دفتر", "withdraw"), "rent_office")
+        self.assertEqual(guess_category_from_text("حقوق ماهانه", "deposit"), "salary")
+
+
 class DatabaseSmokeTests(unittest.IsolatedAsyncioTestCase):
     async def test_monthly_summary(self):
         import os
@@ -81,6 +92,7 @@ class DatabaseSmokeTests(unittest.IsolatedAsyncioTestCase):
                 tx_type="deposit",
                 amount=1_000_000,
                 description="test",
+                category="salary",
                 transaction_date="2024-07-05",
                 jalali_year=1403,
                 jalali_month=4,
@@ -90,7 +102,8 @@ class DatabaseSmokeTests(unittest.IsolatedAsyncioTestCase):
                 account_id=acc.id,
                 tx_type="withdraw",
                 amount=400_000,
-                description="out",
+                description="بنزین",
+                category="fuel",
                 transaction_date="2024-07-06",
                 jalali_year=1403,
                 jalali_month=4,
@@ -99,6 +112,7 @@ class DatabaseSmokeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(summary["deposit"], 1_000_000)
             self.assertEqual(summary["withdraw"], 400_000)
             self.assertEqual(summary["balance"], 600_000)
+            self.assertTrue(any(c["category"] == "fuel" for c in summary["categories"]))
             await db.close()
         finally:
             os.unlink(path)

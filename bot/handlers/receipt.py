@@ -13,11 +13,13 @@ from bot.db.database import Database
 from bot.handlers.keyboards import (
     TYPE_LABEL,
     cancel_keyboard,
+    category_keyboard,
     format_tx_line,
     main_keyboard,
     receipt_confirm_keyboard,
     type_confirm_keyboard,
 )
+from bot.services.categories import category_label, guess_category_from_text
 from bot.services.gemini import (
     analyze_receipt_image,
     analyze_receipt_text,
@@ -35,11 +37,21 @@ from bot.services.receipt_parser import (
 
 logger = logging.getLogger(__name__)
 
-WAIT_RECEIPT, CONFIRM, EDIT_AMOUNT = range(3)
+WAIT_RECEIPT, CONFIRM, EDIT_AMOUNT, PICK_CATEGORY = range(4)
 
 
 def get_db(context: ContextTypes.DEFAULT_TYPE) -> Database:
     return context.application.bot_data["db"]
+
+
+def _ensure_category(parsed: ParsedReceipt) -> ParsedReceipt:
+    if parsed.category:
+        return parsed
+    text = f"{parsed.description}\n{parsed.raw_text}"
+    guessed = guess_category_from_text(text, parsed.tx_type)
+    if guessed:
+        parsed.category = guessed
+    return parsed
 
 
 def _preview(parsed: ParsedReceipt) -> str:
@@ -58,6 +70,7 @@ def _preview(parsed: ParsedReceipt) -> str:
         "📄 نتیجه خواندن رسید:",
         f"• نوع: {kind}",
         f"• مبلغ: {amount}",
+        f"• دسته: {category_label(parsed.category)}",
         f"• تاریخ: {when}",
     ]
     if parsed.description:
@@ -74,7 +87,7 @@ def _parse_image_bytes(image_bytes: bytes, mime_type: str = "image/jpeg") -> Par
     if gemini_enabled():
         try:
             data = analyze_receipt_image(image_bytes, mime_type=mime_type)
-            return gemini_to_parsed(data)
+            return _ensure_category(gemini_to_parsed(data))
         except Exception as exc:  # noqa: BLE001
             logger.warning("Gemini image analysis failed: %s", exc)
 
@@ -85,14 +98,14 @@ def _parse_image_bytes(image_bytes: bytes, mime_type: str = "image/jpeg") -> Par
     notes = list(parsed.notes or [])
     notes.insert(0, "خوانده‌شده با OCR (پشتیبان)")
     parsed.notes = notes
-    return parsed
+    return _ensure_category(parsed)
 
 
 def _parse_text(raw_text: str) -> ParsedReceipt:
     if gemini_enabled():
         try:
             data = analyze_receipt_text(raw_text)
-            return gemini_to_parsed(data)
+            return _ensure_category(gemini_to_parsed(data))
         except Exception as exc:  # noqa: BLE001
             logger.warning("Gemini text analysis failed: %s", exc)
 
@@ -100,48 +113,13 @@ def _parse_text(raw_text: str) -> ParsedReceipt:
     notes = list(parsed.notes or [])
     notes.insert(0, "خوانده‌شده با پارس محلی (پشتیبان)")
     parsed.notes = notes
-    return parsed
+    return _ensure_category(parsed)
 
 
-async def receipt_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.pop("parsed", None)
-    engine = "Gemini AI" if gemini_enabled() else "OCR"
-    await update.effective_message.reply_text(
-        "📷 عکس رسید را بفرستید، یا متن رسید را کپی کنید و بفرستید.\n"
-        f"ربات با {engine} مبلغ، نوع و تاریخ را استخراج می‌کند.",
-        reply_markup=cancel_keyboard(),
-    )
-    return WAIT_RECEIPT
-
-
-async def receipt_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def _after_parse(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, parsed: ParsedReceipt
+) -> int:
     message = update.effective_message
-    if message.text and message.text.strip() in ("❌ انصراف", "/cancel"):
-        from bot.handlers.manual import cancel
-
-        return await cancel(update, context)
-
-    parsed: ParsedReceipt | None = None
-
-    if message.photo:
-        await message.reply_text("⏳ در حال خواندن رسید با هوش مصنوعی...")
-        photo = message.photo[-1]
-        file = await photo.get_file()
-        bio = await file.download_as_bytearray()
-        parsed = _parse_image_bytes(bytes(bio), mime_type="image/jpeg")
-    elif message.document and (message.document.mime_type or "").startswith("image/"):
-        await message.reply_text("⏳ در حال خواندن رسید با هوش مصنوعی...")
-        file = await message.document.get_file()
-        bio = await file.download_as_bytearray()
-        mime = message.document.mime_type or "image/jpeg"
-        parsed = _parse_image_bytes(bytes(bio), mime_type=mime)
-    elif message.text:
-        await message.reply_text("⏳ در حال تحلیل متن رسید...")
-        parsed = _parse_text(message.text)
-    else:
-        await message.reply_text("عکس یا متن رسید بفرستید.")
-        return WAIT_RECEIPT
-
     context.user_data["parsed"] = parsed
 
     if not parsed.amount and not (parsed.raw_text or "").strip():
@@ -165,8 +143,55 @@ async def receipt_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         )
         return CONFIRM
 
+    if not parsed.category:
+        await message.reply_text(
+            _preview(parsed) + "\n\nدسته را انتخاب کنید:",
+            reply_markup=category_keyboard(parsed.tx_type),
+        )
+        return PICK_CATEGORY
+
     await message.reply_text(_preview(parsed), reply_markup=receipt_confirm_keyboard())
     return CONFIRM
+
+
+async def receipt_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("parsed", None)
+    engine = "Gemini AI" if gemini_enabled() else "OCR"
+    await update.effective_message.reply_text(
+        "📷 عکس رسید را بفرستید، یا متن رسید را کپی کنید و بفرستید.\n"
+        f"ربات با {engine} مبلغ، نوع و تاریخ را استخراج می‌کند.",
+        reply_markup=cancel_keyboard(),
+    )
+    return WAIT_RECEIPT
+
+
+async def receipt_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    message = update.effective_message
+    if message.text and message.text.strip() in ("❌ انصراف", "/cancel"):
+        from bot.handlers.manual import cancel
+
+        return await cancel(update, context)
+
+    if message.photo:
+        await message.reply_text("⏳ در حال خواندن رسید با هوش مصنوعی...")
+        photo = message.photo[-1]
+        file = await photo.get_file()
+        bio = await file.download_as_bytearray()
+        parsed = _parse_image_bytes(bytes(bio), mime_type="image/jpeg")
+    elif message.document and (message.document.mime_type or "").startswith("image/"):
+        await message.reply_text("⏳ در حال خواندن رسید با هوش مصنوعی...")
+        file = await message.document.get_file()
+        bio = await file.download_as_bytearray()
+        mime = message.document.mime_type or "image/jpeg"
+        parsed = _parse_image_bytes(bytes(bio), mime_type=mime)
+    elif message.text:
+        await message.reply_text("⏳ در حال تحلیل متن رسید...")
+        parsed = _parse_text(message.text)
+    else:
+        await message.reply_text("عکس یا متن رسید بفرستید.")
+        return WAIT_RECEIPT
+
+    return await _after_parse(update, context, parsed)
 
 
 async def receipt_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -186,17 +211,47 @@ async def receipt_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if data.startswith("rtype:"):
         parsed.tx_type = data.split(":")[1]
+        parsed = _ensure_category(parsed)
+        context.user_data["parsed"] = parsed
+        if not parsed.category:
+            await query.edit_message_text(
+                _preview(parsed) + "\n\nدسته را انتخاب کنید:",
+                reply_markup=category_keyboard(parsed.tx_type),
+            )
+            return PICK_CATEGORY
+        await query.edit_message_text(_preview(parsed), reply_markup=receipt_confirm_keyboard())
+        return CONFIRM
+
+    if data.startswith("cat:"):
+        parsed.category = data.split(":", 1)[1]
         context.user_data["parsed"] = parsed
         await query.edit_message_text(_preview(parsed), reply_markup=receipt_confirm_keyboard())
         return CONFIRM
+
+    if data == "rcat":
+        if not parsed.tx_type:
+            await query.edit_message_text(
+                "اول نوع تراکنش را مشخص کنید:",
+                reply_markup=type_confirm_keyboard(),
+            )
+            return CONFIRM
+        await query.edit_message_text(
+            "دسته را انتخاب کنید:",
+            reply_markup=category_keyboard(parsed.tx_type),
+        )
+        return PICK_CATEGORY
 
     if data == "rswitch":
         parsed.tx_type = "withdraw" if parsed.tx_type == "deposit" else "deposit"
         if not parsed.tx_type:
             parsed.tx_type = "deposit"
+        parsed.category = None
         context.user_data["parsed"] = parsed
-        await query.edit_message_text(_preview(parsed), reply_markup=receipt_confirm_keyboard())
-        return CONFIRM
+        await query.edit_message_text(
+            _preview(parsed) + "\n\nدسته را انتخاب کنید:",
+            reply_markup=category_keyboard(parsed.tx_type),
+        )
+        return PICK_CATEGORY
 
     if data == "redit_amount":
         await query.edit_message_text("مبلغ جدید را به تومان بفرستید:")
@@ -211,6 +266,12 @@ async def receipt_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 else type_confirm_keyboard(),
             )
             return CONFIRM
+        if not parsed.category:
+            await query.edit_message_text(
+                "دسته را انتخاب کنید:",
+                reply_markup=category_keyboard(parsed.tx_type),
+            )
+            return PICK_CATEGORY
         tx = await _persist(update, context, parsed)
         context.user_data.clear()
         await query.edit_message_text(f"✅ ثبت شد.\n\n{format_tx_line(tx)}")
@@ -249,6 +310,13 @@ async def edit_amount_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return CONFIRM
 
+    if not parsed.category:
+        await update.effective_message.reply_text(
+            _preview(parsed) + "\n\nدسته را انتخاب کنید:",
+            reply_markup=category_keyboard(parsed.tx_type),
+        )
+        return PICK_CATEGORY
+
     await update.effective_message.reply_text(
         _preview(parsed), reply_markup=receipt_confirm_keyboard()
     )
@@ -267,12 +335,16 @@ async def _persist(
     if not jy or not jm:
         j = jdatetime.date.fromgregorian(date=gdate)
         jy, jm = j.year, j.month
+    category = parsed.category or (
+        "other_expense" if parsed.tx_type == "withdraw" else "other_income"
+    )
     return await db.add_transaction(
         user_id=user.id,
         account_id=account.id,
         tx_type=parsed.tx_type or "deposit",
         amount=parsed.amount or 0,
         description=parsed.description or "از رسید",
+        category=category,
         source="receipt",
         receipt_text=parsed.raw_text[:4000],
         transaction_date=gdate.isoformat(),

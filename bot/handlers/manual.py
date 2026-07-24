@@ -12,12 +12,15 @@ from bot.db.database import Database
 from bot.handlers.keyboards import (
     TYPE_LABEL,
     cancel_keyboard,
+    categories_help_text,
+    category_keyboard,
     format_tx_line,
     main_keyboard,
 )
+from bot.services.categories import category_label, guess_category_from_text
 from bot.services.receipt_parser import format_money, parse_manual_amount
 
-ASK_AMOUNT, ASK_DESC, ASK_ACCOUNT = range(3)
+ASK_AMOUNT, ASK_CATEGORY, ASK_DESC, ASK_ACCOUNT = range(4)
 ASK_NEW_ACCOUNT = 10
 
 
@@ -29,6 +32,8 @@ async def start_manual(update: Update, context: ContextTypes.DEFAULT_TYPE, tx_ty
     context.user_data["manual_type"] = tx_type
     context.user_data.pop("manual_amount", None)
     context.user_data.pop("manual_desc", None)
+    context.user_data.pop("manual_category", None)
+    context.user_data.pop("manual_account_id", None)
     label = TYPE_LABEL[tx_type]
     await update.effective_message.reply_text(
         f"مبلغ {label} را به تومان بفرستید.\n"
@@ -41,15 +46,13 @@ async def start_manual(update: Update, context: ContextTypes.DEFAULT_TYPE, tx_ty
 
 async def deposit_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if context.args:
-        await quick_command(update, context, "deposit")
-        return ConversationHandler.END
+        return await quick_command(update, context, "deposit")
     return await start_manual(update, context, "deposit")
 
 
 async def withdraw_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if context.args:
-        await quick_command(update, context, "withdraw")
-        return ConversationHandler.END
+        return await quick_command(update, context, "withdraw")
     return await start_manual(update, context, "withdraw")
 
 
@@ -66,8 +69,32 @@ async def manual_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return ASK_AMOUNT
 
     context.user_data["manual_amount"] = amount
+    tx_type = context.user_data["manual_type"]
+    title = "دسته هزینه را انتخاب کنید:" if tx_type == "withdraw" else "دسته درآمد را انتخاب کنید:"
     await update.effective_message.reply_text(
-        f"مبلغ: {format_money(amount)}\n"
+        f"مبلغ: {format_money(amount)}\n{title}",
+        reply_markup=category_keyboard(tx_type),
+    )
+    return ASK_CATEGORY
+
+
+async def manual_category_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+    if data == "rcancel":
+        context.user_data.clear()
+        await query.edit_message_text("انصراف داده شد.")
+        await query.message.reply_text("منوی اصلی:", reply_markup=main_keyboard())
+        return ConversationHandler.END
+
+    if not data.startswith("cat:"):
+        return ASK_CATEGORY
+
+    key = data.split(":", 1)[1]
+    context.user_data["manual_category"] = key
+    await query.edit_message_text(f"دسته: {category_label(key)}")
+    await query.message.reply_text(
         "توضیح را بفرستید یا /skip برای بدون توضیح.",
         reply_markup=cancel_keyboard(),
     )
@@ -81,6 +108,12 @@ async def manual_desc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     if text == "/skip":
         text = ""
     context.user_data["manual_desc"] = text
+
+    # If category missing, try guess from description
+    if not context.user_data.get("manual_category") and text:
+        guessed = guess_category_from_text(text, context.user_data.get("manual_type"))
+        if guessed:
+            context.user_data["manual_category"] = guessed
 
     db = get_db(context)
     accounts = await db.list_accounts(update.effective_user.id)
@@ -115,6 +148,9 @@ async def _save_manual(update: Update, context: ContextTypes.DEFAULT_TYPE, accou
     tx_type = context.user_data["manual_type"]
     amount = context.user_data["manual_amount"]
     desc = context.user_data.get("manual_desc", "")
+    category = context.user_data.get("manual_category", "") or (
+        "other_expense" if tx_type == "withdraw" else "other_income"
+    )
 
     today = date.today()
     j = jdatetime.date.fromgregorian(date=today)
@@ -124,6 +160,7 @@ async def _save_manual(update: Update, context: ContextTypes.DEFAULT_TYPE, accou
         tx_type=tx_type,
         amount=amount,
         description=desc,
+        category=category,
         source="manual",
         transaction_date=today.isoformat(),
         jalali_year=j.year,
@@ -145,45 +182,33 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
-async def quick_command(update: Update, context: ContextTypes.DEFAULT_TYPE, tx_type: str) -> None:
-    """Handle /deposit and /withdraw with inline args."""
+async def quick_command(update: Update, context: ContextTypes.DEFAULT_TYPE, tx_type: str) -> int:
+    """Handle /deposit and /withdraw with inline args — still ask category if needed."""
     args = context.args or []
     if not args:
-        await start_manual(update, context, tx_type)
-        return
+        return await start_manual(update, context, tx_type)
 
     amount = parse_manual_amount(args[0])
     if not amount:
         await update.effective_message.reply_text("مبلغ نامعتبر است.")
-        return
+        return ConversationHandler.END
     desc = " ".join(args[1:]).strip()
-    db = get_db(context)
-    account = await db.ensure_default_account(update.effective_user.id)
-    today = date.today()
-    j = jdatetime.date.fromgregorian(date=today)
-    tx = await db.add_transaction(
-        user_id=update.effective_user.id,
-        account_id=account.id,
-        tx_type=tx_type,
-        amount=amount,
-        description=desc,
-        source="manual",
-        transaction_date=today.isoformat(),
-        jalali_year=j.year,
-        jalali_month=j.month,
-    )
+    context.user_data["manual_type"] = tx_type
+    context.user_data["manual_amount"] = amount
+    context.user_data["manual_desc"] = desc
+    guessed = guess_category_from_text(desc, tx_type) if desc else None
+    if guessed:
+        context.user_data["manual_category"] = guessed
+        db = get_db(context)
+        account = await db.ensure_default_account(update.effective_user.id)
+        return await _save_manual(update, context, account.id)
+
+    title = "دسته هزینه را انتخاب کنید:" if tx_type == "withdraw" else "دسته درآمد را انتخاب کنید:"
     await update.effective_message.reply_text(
-        f"✅ {TYPE_LABEL[tx_type]} ثبت شد.\n\n{format_tx_line(tx)}",
-        reply_markup=main_keyboard(),
+        f"مبلغ: {format_money(amount)}\n{title}",
+        reply_markup=category_keyboard(tx_type),
     )
-
-
-async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await quick_command(update, context, "deposit")
-
-
-async def cmd_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await quick_command(update, context, "withdraw")
+    return ASK_CATEGORY
 
 
 async def list_transactions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -234,6 +259,12 @@ async def accounts_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         lines.append(f"• {a.name} (#{a.id})")
     lines.append("\nبرای ساخت حساب جدید: /newaccount نام حساب")
     await update.effective_message.reply_text("\n".join(lines), reply_markup=main_keyboard())
+
+
+async def categories_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_message.reply_text(
+        categories_help_text(), reply_markup=main_keyboard()
+    )
 
 
 async def new_account_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

@@ -42,6 +42,7 @@ class ParsedReceipt:
     amount: Optional[int] = None  # Rials
     tx_type: Optional[str] = None  # deposit | withdraw
     description: str = ""
+    category: Optional[str] = None
     transaction_date: Optional[date] = None
     jalali_year: Optional[int] = None
     jalali_month: Optional[int] = None
