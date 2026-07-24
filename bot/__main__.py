@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 import sys
+import traceback
 
+from telegram import Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
+    ContextTypes,
     ConversationHandler,
     MessageHandler,
     filters,
@@ -40,6 +43,40 @@ async def post_shutdown(app: Application) -> None:
         await db.close()
 
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error("Exception while handling update: %s", context.error)
+    logger.error(traceback.format_exc())
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "خطایی رخ داد. /start را بزنید و دوباره تلاش کنید."
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_message.reply_text(
+        "دستور را متوجه نشدم.\n"
+        "از دکمه‌های پایین استفاده کنید یا /start بزنید."
+    )
+
+
+def _conv_fallbacks():
+    return [
+        CommandHandler("start", manual.cancel_to_start),
+        CommandHandler("cancel", manual.cancel),
+        MessageHandler(filters.Regex(r"^❌ انصراف$"), manual.cancel),
+        MessageHandler(
+            filters.Regex(
+                r"^(➕ واریز دستی|➖ برداشت دستی|📷 ثبت با رسید|📊 گزارش ماه|"
+                r"📋 آخرین تراکنش‌ها|🏷 دسته‌ها|🏦 حساب‌ها|❓ راهنما)$"
+            ),
+            manual.cancel_to_start,
+        ),
+    ]
+
+
 def build_app() -> Application:
     if not BOT_TOKEN:
         print("خطا: BOT_TOKEN را در فایل .env تنظیم کنید.", file=sys.stderr)
@@ -53,6 +90,8 @@ def build_app() -> Application:
         .build()
     )
 
+    fallbacks = _conv_fallbacks()
+
     manual_conv = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex(r"^➕ واریز دستی$"), manual.deposit_entry),
@@ -61,33 +100,33 @@ def build_app() -> Application:
             CommandHandler("withdraw", manual.withdraw_entry),
         ],
         states={
-            ASK_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_amount)],
+            ASK_AMOUNT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_amount)
+            ],
             ASK_CATEGORY: [
-                CallbackQueryHandler(manual.manual_category_callback, pattern=r"^(cat:|rcancel$)")
+                CallbackQueryHandler(
+                    manual.manual_category_callback, pattern=r"^(cat:|rcancel$)"
+                ),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, manual.prompt_pick_category
+                ),
             ],
             ASK_DESC: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_desc),
                 CommandHandler("skip", manual.manual_desc),
             ],
-            ASK_ACCOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_account)],
+            ASK_ACCOUNT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_account)
+            ],
         },
-        fallbacks=[
-            CommandHandler("cancel", manual.cancel),
-            MessageHandler(filters.Regex(r"^❌ انصراف$"), manual.cancel),
-        ],
+        fallbacks=fallbacks,
         allow_reentry=True,
     )
-
-    # Override: /deposit and /withdraw with args should use quick path.
-    # ConversationHandler above catches bare commands; add separate quick handlers
-    # that only fire when args exist via MessageHandler is hard — we handle in cmd_*
-    # by replacing entry points with callbacks that check args.
 
     receipt_conv = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex(r"^📷 ثبت با رسید$"), receipt.receipt_entry),
             CommandHandler("receipt", receipt.receipt_entry),
-            # Also accept a photo sent directly as a receipt start
             MessageHandler(filters.PHOTO, receipt.receipt_photo),
         ],
         states={
@@ -100,18 +139,25 @@ def build_app() -> Application:
                 CallbackQueryHandler(
                     receipt.receipt_callbacks,
                     pattern=r"^(rok|redit_amount|rswitch|rcancel|rcat|rtype:|cat:)",
-                )
+                ),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, manual.prompt_pick_category
+                ),
             ],
             PICK_CATEGORY: [
-                CallbackQueryHandler(receipt.receipt_callbacks, pattern=r"^(cat:|rcancel$)")
+                CallbackQueryHandler(
+                    receipt.receipt_callbacks, pattern=r"^(cat:|rcancel$)"
+                ),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, manual.prompt_pick_category
+                ),
             ],
-            EDIT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receipt.edit_amount_text)],
+            EDIT_AMOUNT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receipt.edit_amount_text)
+            ],
         },
-        fallbacks=[
-            CommandHandler("cancel", manual.cancel),
-            MessageHandler(filters.Regex(r"^❌ انصراف$"), manual.cancel),
-            CallbackQueryHandler(receipt.receipt_callbacks, pattern=r"^rcancel$"),
-        ],
+        fallbacks=fallbacks
+        + [CallbackQueryHandler(receipt.receipt_callbacks, pattern=r"^rcancel$")],
         allow_reentry=True,
     )
 
@@ -122,10 +168,7 @@ def build_app() -> Application:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, manual.new_account_name)
             ],
         },
-        fallbacks=[
-            CommandHandler("cancel", manual.cancel),
-            MessageHandler(filters.Regex(r"^❌ انصراف$"), manual.cancel),
-        ],
+        fallbacks=fallbacks,
         allow_reentry=True,
     )
 
@@ -137,9 +180,10 @@ def build_app() -> Application:
     app.add_handler(receipt_conv)
     app.add_handler(account_conv)
 
-    # Quick commands with optional args
     app.add_handler(CommandHandler("list", manual.list_transactions))
-    app.add_handler(MessageHandler(filters.Regex(r"^📋 آخرین تراکنش‌ها$"), manual.list_transactions))
+    app.add_handler(
+        MessageHandler(filters.Regex(r"^📋 آخرین تراکنش‌ها$"), manual.list_transactions)
+    )
     app.add_handler(CommandHandler("accounts", manual.accounts_list))
     app.add_handler(MessageHandler(filters.Regex(r"^🏦 حساب‌ها$"), manual.accounts_list))
     app.add_handler(CommandHandler("categories", manual.categories_list))
@@ -150,6 +194,10 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("report", reports.report_entry))
     app.add_handler(MessageHandler(filters.Regex(r"^📊 گزارش ماه$"), reports.report_button))
     app.add_handler(CallbackQueryHandler(reports.report_month_callback, pattern=r"^month:"))
+
+    # Always reply somehow
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_text))
+    app.add_error_handler(on_error)
 
     return app
 

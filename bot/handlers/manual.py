@@ -176,10 +176,38 @@ async def _save_manual(update: Update, context: ContextTypes.DEFAULT_TYPE, accou
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    await update.effective_message.reply_text(
-        "انصراف داده شد.", reply_markup=main_keyboard()
-    )
+    msg = update.effective_message
+    if update.callback_query:
+        await update.callback_query.answer()
+        try:
+            await update.callback_query.edit_message_text("انصراف داده شد.")
+        except Exception:  # noqa: BLE001
+            pass
+        if msg:
+            await msg.reply_text("منوی اصلی:", reply_markup=main_keyboard())
+    elif msg:
+        await msg.reply_text("انصراف داده شد.", reply_markup=main_keyboard())
     return ConversationHandler.END
+
+
+async def cancel_to_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """End any stuck conversation and show the start menu."""
+    context.user_data.clear()
+    from bot.handlers.start import start
+
+    await start(update, context)
+    return ConversationHandler.END
+
+
+async def prompt_pick_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    """User sent text while an inline keyboard choice is expected."""
+    text = (update.effective_message.text or "").strip()
+    if text in ("❌ انصراف", "/cancel"):
+        return await cancel(update, context)
+    await update.effective_message.reply_text(
+        "لطفاً یکی از دکمه‌های روی پیام را لمس کنید، یا /start بزنید."
+    )
+    return None
 
 
 async def quick_command(update: Update, context: ContextTypes.DEFAULT_TYPE, tx_type: str) -> int:
