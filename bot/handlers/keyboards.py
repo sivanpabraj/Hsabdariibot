@@ -5,7 +5,7 @@ from __future__ import annotations
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 
 from bot.db.database import Transaction
-from bot.services.receipt_parser import MONTH_NAMES, format_jalali, format_money, month_title
+from bot.services.receipt_parser import format_jalali, format_money, month_title
 
 TYPE_LABEL = {"deposit": "واریز", "withdraw": "برداشت"}
 
@@ -113,24 +113,24 @@ def format_monthly_report(summary: dict) -> str:
 
 
 def help_text() -> str:
-    months = "، ".join(MONTH_NAMES[i] for i in range(1, 13))
     return (
-        "🤖 ربات حساب واریز و برداشت\n\n"
-        "چه کارهایی می‌توانید بکنید:\n"
-        "• واریز/برداشت دستی با دکمه یا دستور\n"
-        "• ارسال عکس رسید بانکی → خواندن خودکار و ثبت\n"
-        "• ارسال متن رسید → پارس و ثبت\n"
-        "• گزارش ماهانه برای هر حساب\n\n"
-        "دستورها:\n"
-        "/deposit مبلغ [توضیح] — واریز سریع\n"
-        "/withdraw مبلغ [توضیح] — برداشت سریع\n"
-        "/report — گزارش ماه جاری\n"
-        "/report 1403 4 — گزارش ماه مشخص\n"
-        "/list — آخرین تراکنش‌ها\n"
-        "/accounts — لیست حساب‌ها\n"
-        "/newaccount نام — ساخت حساب جدید\n"
-        "/delete شماره — حذف تراکنش\n\n"
-        "مبلغ‌ها به تومان وارد کنید (مثلاً 150000 یا 150٬000).\n"
-        "اگر بنویسید ریال، همان ریال ذخیره می‌شود.\n\n"
-        f"ماه‌های شمسی: {months}"
+        "📒 ربات حسابداری شخصی\n\n"
+        "با این ربات درآمد و هزینه‌های خودتان را ثبت و ماهانه جمع‌بندی کنید.\n\n"
+        "امکانات:\n"
+        "• واریز و برداشت دستی\n"
+        "• خواندن عکس/متن رسید بانکی با هوش مصنوعی\n"
+        "• چند حساب جدا\n"
+        "• گزارش ماهانه شمسی\n\n"
+        "دستورهای سریع:\n"
+        "/deposit مبلغ [توضیح]\n"
+        "/withdraw مبلغ [توضیح]\n"
+        "/report\n"
+        "/report 1404 4\n"
+        "/list\n"
+        "/accounts\n"
+        "/newaccount نام\n"
+        "/delete شماره\n\n"
+        "مبلغ را به تومان وارد کنید.\n"
+        "مثال: 150000 یا 1.5 میلیون\n"
+        "برای ریال بنویسید: 1500000 ریال"
     )

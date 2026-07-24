@@ -32,9 +32,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await db.ensure_default_account(update.effective_user.id)
     name = update.effective_user.first_name or "دوست"
     await update.effective_message.reply_text(
-        f"سلام {name} 👋\n"
-        "ربات واریز و برداشت آماده‌ست.\n"
-        "واریز/برداشت دستی ثبت کن یا عکس رسید بفرست تا خودش بخونه.",
+        f"سلام {name}\n\n"
+        "📒 ربات حسابداری شخصی\n"
+        "درآمد و هزینه‌هات رو اینجا ثبت کن، "
+        "با عکس رسید هم می‌تونی خودکار اضافه کنی، "
+        "و آخر ماه گزارش بگیری.\n\n"
+        "از دکمه‌های پایین شروع کن یا /help را بزن.",
         reply_markup=main_keyboard(),
     )
 
