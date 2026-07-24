@@ -18,7 +18,17 @@ from telegram.ext import (
 
 from bot.config import BOT_TOKEN
 from bot.db.database import Database
-from bot.handlers import manual, receipt, reports, start
+from bot.handlers import banking, manual, receipt, reports, start
+from bot.handlers.banking import (
+    BA_ACCOUNT_NO,
+    BA_BANK,
+    BA_CARD,
+    BA_CONFIRM,
+    BA_OPENING,
+    BA_SHEBA,
+    BA_TITLE,
+    BA_TYPE,
+)
 from bot.handlers.manual import ASK_ACCOUNT, ASK_AMOUNT, ASK_CATEGORY, ASK_DESC, ASK_NEW_ACCOUNT
 from bot.handlers.receipt import CONFIRM, EDIT_AMOUNT, PICK_CATEGORY, WAIT_RECEIPT
 
@@ -87,7 +97,7 @@ BTN_RECEIPT = TextIs("📷 ثبت با رسید")
 BTN_REPORT = TextIs("📊 گزارش ماه")
 BTN_LIST = TextIs("📋 آخرین تراکنش‌ها", "📋 آخرین تراکنشها")
 BTN_CATS = TextIs("🏷 دسته‌ها", "🏷 دستهها")
-BTN_ACCOUNTS = TextIs("🏦 حساب‌ها", "🏦 حسابها")
+BTN_ACCOUNTS = TextIs("🏦 حساب‌ها و بانک‌ها", "🏦 حساب‌ها", "🏦 حسابها", "🏦 حسابها و بانکها", "🏦 حساب‌ها و بانکها")
 BTN_HELP = TextIs("❓ راهنما")
 BTN_CANCEL = TextIs("❌ انصراف")
 
@@ -194,6 +204,42 @@ def build_app() -> Application:
         allow_reentry=True,
     )
 
+    bank_account_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("newbankaccount", banking.new_bank_account_entry),
+            CommandHandler("addaccount", banking.new_bank_account_entry),
+        ],
+        states={
+            BA_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, banking.ba_title)],
+            BA_TYPE: [
+                CallbackQueryHandler(banking.ba_type_callback, pattern=r"^(batype:|bacancel$)")
+            ],
+            BA_BANK: [
+                CallbackQueryHandler(banking.ba_bank_callback, pattern=r"^(babank:|bacancel$)")
+            ],
+            BA_CARD: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, banking.ba_card),
+                CommandHandler("skip", banking.ba_card),
+            ],
+            BA_ACCOUNT_NO: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, banking.ba_account_no),
+                CommandHandler("skip", banking.ba_account_no),
+            ],
+            BA_SHEBA: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, banking.ba_sheba),
+                CommandHandler("skip", banking.ba_sheba),
+            ],
+            BA_OPENING: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, banking.ba_opening)
+            ],
+            BA_CONFIRM: [
+                CallbackQueryHandler(banking.ba_confirm_callback, pattern=r"^(baok|bacancel$)")
+            ],
+        },
+        fallbacks=fallbacks + [CallbackQueryHandler(banking.ba_cancel, pattern=r"^bacancel$")],
+        allow_reentry=True,
+    )
+
     # Diagnostic
     app.add_handler(CommandHandler("ping", ping))
 
@@ -205,11 +251,12 @@ def build_app() -> Application:
     app.add_handler(manual_conv)
     app.add_handler(receipt_conv)
     app.add_handler(account_conv)
+    app.add_handler(bank_account_conv)
 
     app.add_handler(CommandHandler("list", manual.list_transactions))
     app.add_handler(MessageHandler(BTN_LIST, manual.list_transactions))
-    app.add_handler(CommandHandler("accounts", manual.accounts_list))
-    app.add_handler(MessageHandler(BTN_ACCOUNTS, manual.accounts_list))
+    app.add_handler(CommandHandler("accounts", banking.banking_menu))
+    app.add_handler(MessageHandler(BTN_ACCOUNTS, banking.banking_menu))
     app.add_handler(CommandHandler("categories", manual.categories_list))
     app.add_handler(MessageHandler(BTN_CATS, manual.categories_list))
     app.add_handler(CommandHandler("delete", manual.delete_command))

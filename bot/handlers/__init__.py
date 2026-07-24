@@ -1,3 +1,3 @@
-from bot.handlers import manual, receipt, reports, start
+from bot.handlers import banking, manual, receipt, reports, start
 
-__all__ = ["manual", "receipt", "reports", "start"]
+__all__ = ["banking", "manual", "receipt", "reports", "start"]

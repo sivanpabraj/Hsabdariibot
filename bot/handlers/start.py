@@ -37,11 +37,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     name = update.effective_user.first_name or "دوست"
     await update.effective_message.reply_text(
         f"سلام {name}\n\n"
-        "📒 ربات حسابداری شخصی\n"
-        "درآمد و هزینه‌هات رو اینجا ثبت کن، "
-        "با عکس رسید هم می‌تونی خودکار اضافه کنی، "
-        "و آخر ماه گزارش بگیری.\n\n"
-        "از دکمه‌های پایین شروع کن یا /help را بزن.",
+        "📒 حسابداری شخصی حرفه‌ای\n"
+        "بانک، کارت، شماره حساب، شبا و موجودی اولیه را تعریف کنید، "
+        "بعد درآمد و هزینه را ثبت کنید.\n\n"
+        "شروع سریع:\n"
+        "• /newbankaccount ساخت حساب/کارت\n"
+        "• /accounts مشاهده موجودی‌ها\n"
+        "• دکمه‌های واریز/برداشت برای ثبت گردش\n",
         reply_markup=main_keyboard(),
     )
     logger.info("start reply sent")

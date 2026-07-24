@@ -279,14 +279,9 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def accounts_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    db = get_db(context)
-    await db.ensure_default_account(update.effective_user.id)
-    accounts = await db.list_accounts(update.effective_user.id)
-    lines = ["🏦 حساب‌های شما:\n"]
-    for a in accounts:
-        lines.append(f"• {a.name} (#{a.id})")
-    lines.append("\nبرای ساخت حساب جدید: /newaccount نام حساب")
-    await update.effective_message.reply_text("\n".join(lines), reply_markup=main_keyboard())
+    from bot.handlers.banking import banking_menu
+
+    await banking_menu(update, context)
 
 
 async def categories_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

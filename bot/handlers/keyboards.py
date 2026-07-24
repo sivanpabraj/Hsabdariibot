@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 
-from bot.db.database import Transaction
+from bot.db.models import LedgerEntry
 from bot.services.categories import CATEGORY_LABELS, categories_for, category_label
 from bot.services.receipt_parser import format_jalali, format_money, month_title
 
@@ -16,8 +16,8 @@ def main_keyboard() -> ReplyKeyboardMarkup:
         [
             ["➕ واریز دستی", "➖ برداشت دستی"],
             ["📷 ثبت با رسید", "📊 گزارش ماه"],
-            ["📋 آخرین تراکنش‌ها", "🏷 دسته‌ها"],
-            ["🏦 حساب‌ها", "❓ راهنما"],
+            ["📋 آخرین تراکنش‌ها", "🏦 حساب‌ها و بانک‌ها"],
+            ["🏷 دسته‌ها", "❓ راهنما"],
         ],
         resize_keyboard=True,
     )
@@ -80,7 +80,7 @@ def months_keyboard(months: list[tuple[int, int]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def format_tx_line(tx: Transaction) -> str:
+def format_tx_line(tx: LedgerEntry) -> str:
     kind = TYPE_LABEL.get(tx.type, tx.type)
     emoji = "🟢" if tx.type == "deposit" else "🔴"
     date_str = format_jalali(
@@ -104,8 +104,14 @@ def format_monthly_report(summary: dict) -> str:
         "",
         f"🟢 واریز: {format_money(summary['deposit'])} ({summary['deposit_count']} مورد)",
         f"🔴 برداشت: {format_money(summary['withdraw'])} ({summary['withdraw_count']} مورد)",
-        f"⚖️ مانده ماه: {format_money(summary['balance'])}",
+        f"⚖️ خالص ماه: {format_money(summary['balance'])}",
     ]
+
+    if summary.get("balances"):
+        lines.append("")
+        lines.append("🏦 موجودی حساب‌ها:")
+        for b in summary["balances"]:
+            lines.append(f"• {b['name']}: {format_money(b['balance'])}")
 
     expense_cats = [c for c in summary.get("categories", []) if c["type"] == "withdraw"]
     income_cats = [c for c in summary.get("categories", []) if c["type"] == "deposit"]
@@ -130,12 +136,12 @@ def format_monthly_report(summary: dict) -> str:
 
     if summary.get("accounts"):
         lines.append("")
-        lines.append("🏦 به تفکیک حساب:")
+        lines.append("📒 گردش ماه به تفکیک حساب:")
         for acc in summary["accounts"]:
-            bal = acc["deposit"] - acc["withdraw"]
+            net = acc["deposit"] - acc["withdraw"]
             lines.append(
-                f"• {acc['name']}: واریز {format_money(acc['deposit'])} | "
-                f"برداشت {format_money(acc['withdraw'])} | مانده {format_money(bal)}"
+                f"• {acc['name']}: +{format_money(acc['deposit'])} / "
+                f"-{format_money(acc['withdraw'])} | خالص {format_money(net)}"
             )
     return "\n".join(lines)
 
@@ -156,22 +162,18 @@ def categories_help_text() -> str:
 
 def help_text() -> str:
     return (
-        "📒 ربات حسابداری شخصی\n\n"
-        "درآمد و هزینه‌ها را با دسته ثبت کنید:\n"
-        "بنزین، مخارج منزل، اجاره خانه/دفتر، آب، برق، گاز و …\n\n"
-        "امکانات:\n"
-        "• واریز و برداشت دستی + انتخاب دسته\n"
-        "• خواندن رسید بانکی با هوش مصنوعی\n"
-        "• گزارش ماهانه به‌تفکیک دسته و حساب\n\n"
+        "📒 ربات حسابداری شخصی — سطح حرفه‌ای\n\n"
+        "بانک، کارت، شماره حساب، شبا و موجودی اولیه را دقیق ثبت کنید.\n"
+        "سپس درآمد/هزینه را با دسته بزنید و گزارش ماهانه بگیرید.\n\n"
         "دستورها:\n"
-        "/deposit مبلغ [توضیح]\n"
-        "/withdraw مبلغ [توضیح]\n"
-        "/report\n"
-        "/list\n"
-        "/accounts\n"
-        "/categories\n"
-        "/delete شماره\n\n"
-        "مبلغ پیش‌فرض تومان است. مثال: 150000 یا 1.5 میلیون"
+        "/newbankaccount — تعریف حساب/کارت جدید\n"
+        "/accounts — لیست حساب‌ها و موجودی\n"
+        "/deposit /withdraw — ثبت گردش\n"
+        "/receipt — ثبت با رسید\n"
+        "/report — گزارش ماه\n"
+        "/categories — دسته‌ها\n"
+        "/ping — تست آنلاین بودن\n\n"
+        "مبلغ پیش‌فرض تومان است."
     )
 
 
