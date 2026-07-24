@@ -20,7 +20,8 @@
 ## پیش‌نیاز
 
 - Python 3.10+
-- Tesseract OCR با زبان فارسی:
+- کلید Gemini از [Google AI Studio](https://aistudio.google.com/apikey) برای خواندن هوشمند رسید
+- (اختیاری) Tesseract OCR فارسی به‌عنوان پشتیبان:
 
 ```bash
 # Debian/Ubuntu
@@ -35,13 +36,15 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# توکن ربات را از @BotFather بگیرید و در .env بگذارید
+# BOT_TOKEN و GEMINI_API_KEY را پر کنید
 ```
 
 محتوای `.env`:
 
 ```env
 BOT_TOKEN=123456:ABC...
+GEMINI_API_KEY=your-gemini-key
+GEMINI_MODEL=gemini-2.5-flash
 ALLOWED_USER_IDS=   # خالی = همه؛ یا آیدی عددی خودتان
 DEFAULT_ACCOUNT_NAME=حساب اصلی
 ```
@@ -89,6 +92,6 @@ source .venv/bin/activate
 python -m unittest discover -s tests -v
 ```
 
-## نکته درباره OCR
+## نکته درباره خواندن رسید
 
-کیفیت خواندن رسید به وضوح عکس بستگی دارد. اگر مبلغ یا نوع اشتباه بود، قبل از ثبت با دکمه‌های «اصلاح مبلغ» / «عوض کردن نوع» درستش کنید. برای رسیدهای خیلی تار، متن رسید را کپی کنید و بفرستید.
+اولویت با **Gemini AI** است (عکس و متن). اگر Gemini در دسترس نباشد، از OCR محلی (Tesseract) استفاده می‌شود. قبل از ثبت نهایی می‌توانید مبلغ و نوع را اصلاح کنید.

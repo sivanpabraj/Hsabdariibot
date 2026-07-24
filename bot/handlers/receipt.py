@@ -1,7 +1,8 @@
-"""Receipt photo/text OCR flow with confirmation."""
+"""Receipt photo/text flow: Gemini AI first, Tesseract fallback."""
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 import jdatetime
@@ -17,6 +18,12 @@ from bot.handlers.keyboards import (
     receipt_confirm_keyboard,
     type_confirm_keyboard,
 )
+from bot.services.gemini import (
+    analyze_receipt_image,
+    analyze_receipt_text,
+    gemini_enabled,
+    gemini_to_parsed,
+)
 from bot.services.ocr import extract_text_from_image
 from bot.services.receipt_parser import (
     ParsedReceipt,
@@ -25,6 +32,8 @@ from bot.services.receipt_parser import (
     parse_manual_amount,
     parse_receipt_text,
 )
+
+logger = logging.getLogger(__name__)
 
 WAIT_RECEIPT, CONFIRM, EDIT_AMOUNT = range(3)
 
@@ -37,7 +46,11 @@ def _preview(parsed: ParsedReceipt) -> str:
     kind = TYPE_LABEL.get(parsed.tx_type or "", "نامشخص")
     amount = format_money(parsed.amount) if parsed.amount else "—"
     when = (
-        format_jalali(jy=parsed.jalali_year, jm=parsed.jalali_month, jd=parsed.transaction_date.day)
+        format_jalali(
+            jy=parsed.jalali_year,
+            jm=parsed.jalali_month,
+            jd=parsed.transaction_date.day,
+        )
         if parsed.transaction_date and parsed.jalali_year and parsed.jalali_month
         else "—"
     )
@@ -57,11 +70,45 @@ def _preview(parsed: ParsedReceipt) -> str:
     return "\n".join(lines)
 
 
+def _parse_image_bytes(image_bytes: bytes, mime_type: str = "image/jpeg") -> ParsedReceipt:
+    if gemini_enabled():
+        try:
+            data = analyze_receipt_image(image_bytes, mime_type=mime_type)
+            return gemini_to_parsed(data)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Gemini image analysis failed: %s", exc)
+
+    raw_text = extract_text_from_image(image_bytes)
+    if not raw_text.strip():
+        return ParsedReceipt(notes=["متنی از عکس خوانده نشد"], raw_text="")
+    parsed = parse_receipt_text(raw_text)
+    notes = list(parsed.notes or [])
+    notes.insert(0, "خوانده‌شده با OCR (پشتیبان)")
+    parsed.notes = notes
+    return parsed
+
+
+def _parse_text(raw_text: str) -> ParsedReceipt:
+    if gemini_enabled():
+        try:
+            data = analyze_receipt_text(raw_text)
+            return gemini_to_parsed(data)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Gemini text analysis failed: %s", exc)
+
+    parsed = parse_receipt_text(raw_text)
+    notes = list(parsed.notes or [])
+    notes.insert(0, "خوانده‌شده با پارس محلی (پشتیبان)")
+    parsed.notes = notes
+    return parsed
+
+
 async def receipt_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("parsed", None)
+    engine = "Gemini AI" if gemini_enabled() else "OCR"
     await update.effective_message.reply_text(
         "📷 عکس رسید را بفرستید، یا متن رسید را کپی کنید و بفرستید.\n"
-        "ربات مبلغ، نوع و تاریخ را استخراج می‌کند.",
+        f"ربات با {engine} مبلغ، نوع و تاریخ را استخراج می‌کند.",
         reply_markup=cancel_keyboard(),
     )
     return WAIT_RECEIPT
@@ -74,46 +121,41 @@ async def receipt_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
         return await cancel(update, context)
 
-    raw_text = ""
+    parsed: ParsedReceipt | None = None
+
     if message.photo:
-        await message.reply_text("⏳ در حال خواندن رسید...")
+        await message.reply_text("⏳ در حال خواندن رسید با هوش مصنوعی...")
         photo = message.photo[-1]
         file = await photo.get_file()
         bio = await file.download_as_bytearray()
-        try:
-            raw_text = extract_text_from_image(bytes(bio))
-        except Exception as exc:  # noqa: BLE001
-            await message.reply_text(
-                f"خطا در OCR: {exc}\nمتن رسید را دستی بفرستید.",
-                reply_markup=cancel_keyboard(),
-            )
-            return WAIT_RECEIPT
-        if not raw_text.strip():
-            await message.reply_text(
-                "متنی از عکس خوانده نشد. عکس واضح‌تر بفرستید یا متن رسید را بنویسید.",
-                reply_markup=cancel_keyboard(),
-            )
-            return WAIT_RECEIPT
+        parsed = _parse_image_bytes(bytes(bio), mime_type="image/jpeg")
     elif message.document and (message.document.mime_type or "").startswith("image/"):
-        await message.reply_text("⏳ در حال خواندن رسید...")
+        await message.reply_text("⏳ در حال خواندن رسید با هوش مصنوعی...")
         file = await message.document.get_file()
         bio = await file.download_as_bytearray()
-        raw_text = extract_text_from_image(bytes(bio))
+        mime = message.document.mime_type or "image/jpeg"
+        parsed = _parse_image_bytes(bytes(bio), mime_type=mime)
     elif message.text:
-        raw_text = message.text
+        await message.reply_text("⏳ در حال تحلیل متن رسید...")
+        parsed = _parse_text(message.text)
     else:
         await message.reply_text("عکس یا متن رسید بفرستید.")
         return WAIT_RECEIPT
 
-    parsed = parse_receipt_text(raw_text)
     context.user_data["parsed"] = parsed
+
+    if not parsed.amount and not (parsed.raw_text or "").strip():
+        await message.reply_text(
+            "متنی از رسید خوانده نشد. عکس واضح‌تر بفرستید یا متن را بنویسید.",
+            reply_markup=cancel_keyboard(),
+        )
+        return WAIT_RECEIPT
 
     if not parsed.amount:
         await message.reply_text(
-            "مبلغ پیدا نشد. مبلغ را به تومان بفرستید:",
+            _preview(parsed) + "\n\nمبلغ پیدا نشد. مبلغ را به تومان بفرستید:",
             reply_markup=cancel_keyboard(),
         )
-        # Keep OCR text for later
         return EDIT_AMOUNT
 
     if not parsed.tx_type:
@@ -164,7 +206,9 @@ async def receipt_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if not parsed.amount or not parsed.tx_type:
             await query.edit_message_text(
                 "مبلغ یا نوع کامل نیست. اصلاح کنید.",
-                reply_markup=receipt_confirm_keyboard() if parsed.amount else type_confirm_keyboard(),
+                reply_markup=receipt_confirm_keyboard()
+                if parsed.amount
+                else type_confirm_keyboard(),
             )
             return CONFIRM
         tx = await _persist(update, context, parsed)
