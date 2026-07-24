@@ -1,9 +1,8 @@
-"""Telegram finance bot entrypoint."""
+"""Telegram personal accounting bot — simplified reliable handlers."""
 
 from __future__ import annotations
 
 import logging
-import sys
 import traceback
 
 from telegram import Update
@@ -24,54 +23,94 @@ from bot.handlers.manual import ASK_ACCOUNT, ASK_AMOUNT, ASK_CATEGORY, ASK_DESC,
 from bot.handlers.receipt import CONFIRM, EDIT_AMOUNT, PICK_CATEGORY, WAIT_RECEIPT
 
 logging.basicConfig(
-    format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("bot")
 
 
 async def post_init(app: Application) -> None:
     db = Database()
     await db.connect()
     app.bot_data["db"] = db
-    logger.info("Database ready")
+    me = await app.bot.get_me()
+    logger.info("Ready @%s", me.username)
 
 
 async def post_shutdown(app: Application) -> None:
-    db: Database | None = app.bot_data.get("db")
+    db = app.bot_data.get("db")
     if db:
         await db.close()
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error("Exception while handling update: %s", context.error)
+    err = context.error
+    logger.error("ERROR: %s", err)
     logger.error(traceback.format_exc())
-    if isinstance(update, Update) and update.effective_message:
+    if isinstance(update, Update) and update.effective_chat:
         try:
-            await update.effective_message.reply_text(
-                "خطایی رخ داد. /start را بزنید و دوباره تلاش کنید."
+            await context.bot.send_message(
+                update.effective_chat.id,
+                f"خطای داخلی: {type(err).__name__}\n/start را بزنید.",
             )
         except Exception:  # noqa: BLE001
-            pass
+            logger.exception("failed to send error message")
 
 
-async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text(
-        "دستور را متوجه نشدم.\n"
-        "از دکمه‌های پایین استفاده کنید یا /start بزنید."
+def _norm(text: str | None) -> str:
+    """Normalize Persian text for button matching (remove ZWNJ etc.)."""
+    if not text:
+        return ""
+    return (
+        text.replace("\u200c", "")
+        .replace("\u200f", "")
+        .replace("\u200e", "")
+        .strip()
     )
 
 
-def _conv_fallbacks():
+from telegram.ext.filters import MessageFilter
+
+
+class TextIs(MessageFilter):
+    def __init__(self, *options: str):
+        super().__init__()
+        self.options = {_norm(o) for o in options}
+
+    def filter(self, message) -> bool:
+        return _norm(message.text) in self.options
+
+
+BTN_DEPOSIT = TextIs("➕ واریز دستی")
+BTN_WITHDRAW = TextIs("➖ برداشت دستی")
+BTN_RECEIPT = TextIs("📷 ثبت با رسید")
+BTN_REPORT = TextIs("📊 گزارش ماه")
+BTN_LIST = TextIs("📋 آخرین تراکنش‌ها", "📋 آخرین تراکنشها")
+BTN_CATS = TextIs("🏷 دسته‌ها", "🏷 دستهها")
+BTN_ACCOUNTS = TextIs("🏦 حساب‌ها", "🏦 حسابها")
+BTN_HELP = TextIs("❓ راهنما")
+BTN_CANCEL = TextIs("❌ انصراف")
+
+
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.info("PING from %s", update.effective_user.id if update.effective_user else None)
+    await update.effective_message.reply_text("pong ✅ ربات آنلاین است. /start را بزنید.")
+
+
+async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.info("UNKNOWN %r", update.effective_message.text if update.effective_message else None)
+    await update.effective_message.reply_text(
+        "متوجه نشدم.\n/start یا /ping را بزنید."
+    )
+
+
+def _fallbacks():
     return [
         CommandHandler("start", manual.cancel_to_start),
         CommandHandler("cancel", manual.cancel),
-        MessageHandler(filters.Regex(r"^❌ انصراف$"), manual.cancel),
+        MessageHandler(BTN_CANCEL, manual.cancel),
         MessageHandler(
-            filters.Regex(
-                r"^(➕ واریز دستی|➖ برداشت دستی|📷 ثبت با رسید|📊 گزارش ماه|"
-                r"📋 آخرین تراکنش‌ها|🏷 دسته‌ها|🏦 حساب‌ها|❓ راهنما)$"
-            ),
+            BTN_DEPOSIT | BTN_WITHDRAW | BTN_RECEIPT | BTN_REPORT | BTN_LIST | BTN_CATS | BTN_ACCOUNTS | BTN_HELP,
             manual.cancel_to_start,
         ),
     ]
@@ -79,8 +118,7 @@ def _conv_fallbacks():
 
 def build_app() -> Application:
     if not BOT_TOKEN:
-        print("خطا: BOT_TOKEN را در فایل .env تنظیم کنید.", file=sys.stderr)
-        sys.exit(1)
+        raise SystemExit("BOT_TOKEN missing in .env")
 
     app = (
         Application.builder()
@@ -90,34 +128,26 @@ def build_app() -> Application:
         .build()
     )
 
-    fallbacks = _conv_fallbacks()
+    fallbacks = _fallbacks()
 
     manual_conv = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.Regex(r"^➕ واریز دستی$"), manual.deposit_entry),
-            MessageHandler(filters.Regex(r"^➖ برداشت دستی$"), manual.withdraw_entry),
+            MessageHandler(BTN_DEPOSIT, manual.deposit_entry),
+            MessageHandler(BTN_WITHDRAW, manual.withdraw_entry),
             CommandHandler("deposit", manual.deposit_entry),
             CommandHandler("withdraw", manual.withdraw_entry),
         ],
         states={
-            ASK_AMOUNT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_amount)
-            ],
+            ASK_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_amount)],
             ASK_CATEGORY: [
-                CallbackQueryHandler(
-                    manual.manual_category_callback, pattern=r"^(cat:|rcancel$)"
-                ),
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND, manual.prompt_pick_category
-                ),
+                CallbackQueryHandler(manual.manual_category_callback, pattern=r"^(cat:|rcancel$)"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, manual.prompt_pick_category),
             ],
             ASK_DESC: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_desc),
                 CommandHandler("skip", manual.manual_desc),
             ],
-            ASK_ACCOUNT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_account)
-            ],
+            ASK_ACCOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_account)],
         },
         fallbacks=fallbacks,
         allow_reentry=True,
@@ -125,7 +155,7 @@ def build_app() -> Application:
 
     receipt_conv = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.Regex(r"^📷 ثبت با رسید$"), receipt.receipt_entry),
+            MessageHandler(BTN_RECEIPT, receipt.receipt_entry),
             CommandHandler("receipt", receipt.receipt_entry),
             MessageHandler(filters.PHOTO, receipt.receipt_photo),
         ],
@@ -140,21 +170,13 @@ def build_app() -> Application:
                     receipt.receipt_callbacks,
                     pattern=r"^(rok|redit_amount|rswitch|rcancel|rcat|rtype:|cat:)",
                 ),
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND, manual.prompt_pick_category
-                ),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, manual.prompt_pick_category),
             ],
             PICK_CATEGORY: [
-                CallbackQueryHandler(
-                    receipt.receipt_callbacks, pattern=r"^(cat:|rcancel$)"
-                ),
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND, manual.prompt_pick_category
-                ),
+                CallbackQueryHandler(receipt.receipt_callbacks, pattern=r"^(cat:|rcancel$)"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, manual.prompt_pick_category),
             ],
-            EDIT_AMOUNT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receipt.edit_amount_text)
-            ],
+            EDIT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receipt.edit_amount_text)],
         },
         fallbacks=fallbacks
         + [CallbackQueryHandler(receipt.receipt_callbacks, pattern=r"^rcancel$")],
@@ -172,42 +194,41 @@ def build_app() -> Application:
         allow_reentry=True,
     )
 
+    # Diagnostic
+    app.add_handler(CommandHandler("ping", ping))
+
+    # Core commands FIRST
     app.add_handler(CommandHandler("start", start.start))
     app.add_handler(CommandHandler("help", start.help_cmd))
-    app.add_handler(MessageHandler(filters.Regex(r"^❓ راهنما$"), start.help_cmd))
+    app.add_handler(MessageHandler(BTN_HELP, start.help_cmd))
 
     app.add_handler(manual_conv)
     app.add_handler(receipt_conv)
     app.add_handler(account_conv)
 
     app.add_handler(CommandHandler("list", manual.list_transactions))
-    app.add_handler(
-        MessageHandler(filters.Regex(r"^📋 آخرین تراکنش‌ها$"), manual.list_transactions)
-    )
+    app.add_handler(MessageHandler(BTN_LIST, manual.list_transactions))
     app.add_handler(CommandHandler("accounts", manual.accounts_list))
-    app.add_handler(MessageHandler(filters.Regex(r"^🏦 حساب‌ها$"), manual.accounts_list))
+    app.add_handler(MessageHandler(BTN_ACCOUNTS, manual.accounts_list))
     app.add_handler(CommandHandler("categories", manual.categories_list))
-    app.add_handler(MessageHandler(filters.Regex(r"^🏷 دسته‌ها$"), manual.categories_list))
+    app.add_handler(MessageHandler(BTN_CATS, manual.categories_list))
     app.add_handler(CommandHandler("delete", manual.delete_command))
     app.add_handler(CallbackQueryHandler(manual.delete_callback, pattern=r"^del:\d+$"))
 
     app.add_handler(CommandHandler("report", reports.report_entry))
-    app.add_handler(MessageHandler(filters.Regex(r"^📊 گزارش ماه$"), reports.report_button))
+    app.add_handler(MessageHandler(BTN_REPORT, reports.report_button))
     app.add_handler(CallbackQueryHandler(reports.report_month_callback, pattern=r"^month:"))
 
-    # Always reply somehow
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_text))
     app.add_error_handler(on_error)
-
     return app
 
 
 def main() -> None:
-    """Run a classic long-polling bot against api.telegram.org (no local Bot API server)."""
     app = build_app()
-    logger.info("Bot starting with simple polling (no webhook / no local Telegram server)...")
+    logger.info("Polling start")
     app.run_polling(
-        drop_pending_updates=True,
+        drop_pending_updates=False,
         allowed_updates=["message", "callback_query"],
     )
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -26,6 +28,8 @@ async def ensure_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger = logging.getLogger("bot.start")
+    logger.info("start called by %s", update.effective_user.id if update.effective_user else None)
     if not await ensure_access(update, context):
         return
     db = get_db(context)
@@ -40,6 +44,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "از دکمه‌های پایین شروع کن یا /help را بزن.",
         reply_markup=main_keyboard(),
     )
+    logger.info("start reply sent")
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
