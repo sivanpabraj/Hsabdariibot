@@ -19,6 +19,14 @@ from bot.handlers.keyboards import (
 )
 from bot.services.categories import category_label, guess_category_from_text
 from bot.services.receipt_parser import format_money, parse_manual_amount
+from bot.textnorm import normalize_text
+
+_CANCEL_LABELS = {normalize_text("❌ انصراف"), "/cancel"}
+
+
+def _is_cancel_text(text: str | None) -> bool:
+    t = (text or "").strip()
+    return t == "/cancel" or normalize_text(t) in _CANCEL_LABELS
 
 ASK_AMOUNT, ASK_CATEGORY, ASK_DESC, ASK_ACCOUNT = range(4)
 ASK_NEW_ACCOUNT = 10
@@ -58,7 +66,7 @@ async def withdraw_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def manual_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = (update.effective_message.text or "").strip()
-    if text in ("❌ انصراف", "/cancel"):
+    if _is_cancel_text(text):
         return await cancel(update, context)
 
     amount = parse_manual_amount(text)
@@ -103,7 +111,7 @@ async def manual_category_callback(update: Update, context: ContextTypes.DEFAULT
 
 async def manual_desc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = (update.effective_message.text or "").strip()
-    if text in ("❌ انصراف", "/cancel"):
+    if _is_cancel_text(text):
         return await cancel(update, context)
     if text == "/skip":
         text = ""
@@ -134,7 +142,7 @@ async def manual_desc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def manual_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = (update.effective_message.text or "").strip()
-    if text in ("❌ انصراف", "/cancel"):
+    if _is_cancel_text(text):
         return await cancel(update, context)
 
     db = get_db(context)
@@ -202,7 +210,7 @@ async def cancel_to_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def prompt_pick_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
     """User sent text while an inline keyboard choice is expected."""
     text = (update.effective_message.text or "").strip()
-    if text in ("❌ انصراف", "/cancel"):
+    if _is_cancel_text(text):
         return await cancel(update, context)
     await update.effective_message.reply_text(
         "لطفاً یکی از دکمه‌های روی پیام را لمس کنید، یا /start بزنید."
@@ -308,7 +316,7 @@ async def new_account_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def new_account_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = (update.effective_message.text or "").strip()
-    if text in ("❌ انصراف", "/cancel"):
+    if _is_cancel_text(text):
         return await cancel(update, context)
     db = get_db(context)
     account = await db.get_or_create_account_by_name(update.effective_user.id, text)

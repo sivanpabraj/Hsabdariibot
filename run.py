@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the deposit/withdraw Telegram bot."""
+"""Run the personal accounting Telegram bot."""
 
 from bot.__main__ import main
 

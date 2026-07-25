@@ -18,6 +18,12 @@ from bot.services.iran_banking import (
     validate_sheba,
 )
 from bot.services.receipt_parser import format_money, parse_manual_amount
+from bot.textnorm import normalize_text
+
+
+def _is_cancel_text(text: str | None) -> bool:
+    t = (text or "").strip()
+    return t == "/cancel" or normalize_text(t) == normalize_text("❌ انصراف")
 
 (
     BA_TITLE,
@@ -126,7 +132,7 @@ async def new_bank_account_entry(update: Update, context: ContextTypes.DEFAULT_T
 
 async def ba_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = (update.effective_message.text or "").strip()
-    if text in ("❌ انصراف", "/cancel"):
+    if _is_cancel_text(text):
         return await ba_cancel(update, context)
     if len(text) < 2:
         await update.effective_message.reply_text("عنوان خیلی کوتاه است.")
@@ -179,7 +185,7 @@ async def ba_bank_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def ba_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = (update.effective_message.text or "").strip()
-    if text in ("❌ انصراف", "/cancel"):
+    if _is_cancel_text(text):
         return await ba_cancel(update, context)
     if text == "/skip":
         context.user_data["ba"]["card_number"] = ""
@@ -206,7 +212,7 @@ async def ba_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def ba_account_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = (update.effective_message.text or "").strip()
-    if text in ("❌ انصراف", "/cancel"):
+    if _is_cancel_text(text):
         return await ba_cancel(update, context)
     if text == "/skip":
         context.user_data["ba"]["account_number"] = ""
@@ -224,7 +230,7 @@ async def ba_account_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def ba_sheba(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = (update.effective_message.text or "").strip()
-    if text in ("❌ انصراف", "/cancel"):
+    if _is_cancel_text(text):
         return await ba_cancel(update, context)
     if text == "/skip":
         context.user_data["ba"]["sheba"] = ""
@@ -242,7 +248,7 @@ async def ba_sheba(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def ba_opening(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = (update.effective_message.text or "").strip()
-    if text in ("❌ انصراف", "/cancel"):
+    if _is_cancel_text(text):
         return await ba_cancel(update, context)
     if text in ("0", "۰"):
         amount = 0

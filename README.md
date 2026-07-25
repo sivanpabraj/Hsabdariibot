@@ -28,7 +28,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-python run.py
+# BOT_TOKEN را از @BotFather در .env بگذارید
+python diagnose.py    # بررسی توکن و webhook
+python run.py         # فقط یک نمونه باید اجرا باشد
 ```
 
 `.env` را commit نکنید.
@@ -43,5 +45,11 @@ python run.py
 | `/receipt` | ثبت با رسید |
 | `/report` | گزارش ماه |
 | `/ping` | تست آنلاین بودن |
+
+اگر ربات جواب نداد:
+
+1. `python diagnose.py` را اجرا کنید
+2. فقط **یک** `python run.py` روشن باشد (نمونه‌های تکراری همدیگر را قطع می‌کنند)
+3. در تلگرام `/ping` بعد `/start` بزنید
 
 ربات تلگرام نمونه: [@Sivanpbot](https://t.me/Sivanpbot)
