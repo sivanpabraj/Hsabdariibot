@@ -57,8 +57,6 @@ _BA_STATE = {
     banking.BA_CONFIRM: FLOW_BA_CONFIRM,
 }
 
-_END = None  # unused; ConversationHandler.END used via import inside _apply_result
-
 
 def _apply_result(context: ContextTypes.DEFAULT_TYPE, result, mapping: dict) -> None:
     """Update flow from a legacy handler return value."""
