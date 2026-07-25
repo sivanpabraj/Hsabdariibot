@@ -44,4 +44,6 @@ python run.py
 | `/report` | گزارش ماه |
 | `/ping` | تست آنلاین بودن |
 
+اگر ربات جواب نداد: فقط **یک** نمونه از `python run.py` باید در حال اجرا باشد، بعد `/ping` و سپس `/start` را بزنید.
+
 ربات تلگرام نمونه: [@Sivanpbot](https://t.me/Sivanpbot)
