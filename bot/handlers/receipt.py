@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date
 
@@ -34,8 +35,14 @@ from bot.services.receipt_parser import (
     parse_manual_amount,
     parse_receipt_text,
 )
+from bot.textnorm import normalize_text
 
 logger = logging.getLogger(__name__)
+
+
+def _is_cancel_text(text: str | None) -> bool:
+    t = (text or "").strip()
+    return t == "/cancel" or normalize_text(t) == normalize_text("❌ انصراف")
 
 WAIT_RECEIPT, CONFIRM, EDIT_AMOUNT, PICK_CATEGORY = range(4)
 
@@ -167,26 +174,27 @@ async def receipt_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def receipt_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message = update.effective_message
-    if message.text and message.text.strip() in ("❌ انصراف", "/cancel"):
+    if message.text and _is_cancel_text(message.text):
         from bot.handlers.manual import cancel
 
         return await cancel(update, context)
 
+    # Gemini / Tesseract are blocking — run in a thread so polling stays alive.
     if message.photo:
         await message.reply_text("⏳ در حال خواندن رسید با هوش مصنوعی...")
         photo = message.photo[-1]
         file = await photo.get_file()
         bio = await file.download_as_bytearray()
-        parsed = _parse_image_bytes(bytes(bio), mime_type="image/jpeg")
+        parsed = await asyncio.to_thread(_parse_image_bytes, bytes(bio), "image/jpeg")
     elif message.document and (message.document.mime_type or "").startswith("image/"):
         await message.reply_text("⏳ در حال خواندن رسید با هوش مصنوعی...")
         file = await message.document.get_file()
         bio = await file.download_as_bytearray()
         mime = message.document.mime_type or "image/jpeg"
-        parsed = _parse_image_bytes(bytes(bio), mime_type=mime)
+        parsed = await asyncio.to_thread(_parse_image_bytes, bytes(bio), mime)
     elif message.text:
         await message.reply_text("⏳ در حال تحلیل متن رسید...")
-        parsed = _parse_text(message.text)
+        parsed = await asyncio.to_thread(_parse_text, message.text)
     else:
         await message.reply_text("عکس یا متن رسید بفرستید.")
         return WAIT_RECEIPT
@@ -283,7 +291,7 @@ async def receipt_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def edit_amount_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = (update.effective_message.text or "").strip()
-    if text in ("❌ انصراف", "/cancel"):
+    if _is_cancel_text(text):
         from bot.handlers.manual import cancel
 
         return await cancel(update, context)

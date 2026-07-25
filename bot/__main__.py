@@ -1,4 +1,4 @@
-"""Telegram personal accounting bot — simplified reliable handlers."""
+"""Telegram personal accounting bot — reliable handlers."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.ext.filters import MessageFilter
 
 from bot.config import BOT_TOKEN
 from bot.db.database import Database
@@ -31,6 +32,7 @@ from bot.handlers.banking import (
 )
 from bot.handlers.manual import ASK_ACCOUNT, ASK_AMOUNT, ASK_CATEGORY, ASK_DESC, ASK_NEW_ACCOUNT
 from bot.handlers.receipt import CONFIRM, EDIT_AMOUNT, PICK_CATEGORY, WAIT_RECEIPT
+from bot.textnorm import normalize_text
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -40,11 +42,13 @@ logger = logging.getLogger("bot")
 
 
 async def post_init(app: Application) -> None:
+    # Clear any leftover webhook so long-polling receives updates.
+    await app.bot.delete_webhook(drop_pending_updates=True)
     db = Database()
     await db.connect()
     app.bot_data["db"] = db
     me = await app.bot.get_me()
-    logger.info("Ready @%s", me.username)
+    logger.info("Ready @%s (webhook cleared, polling)", me.username)
 
 
 async def post_shutdown(app: Application) -> None:
@@ -61,34 +65,21 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             await context.bot.send_message(
                 update.effective_chat.id,
-                f"خطای داخلی: {type(err).__name__}\n/start را بزنید.",
+                f"خطای داخلی: {type(err).__name__}\n/start یا /ping را بزنید.",
             )
         except Exception:  # noqa: BLE001
             logger.exception("failed to send error message")
 
 
-def _norm(text: str | None) -> str:
-    """Normalize Persian text for button matching (remove ZWNJ etc.)."""
-    if not text:
-        return ""
-    return (
-        text.replace("\u200c", "")
-        .replace("\u200f", "")
-        .replace("\u200e", "")
-        .strip()
-    )
-
-
-from telegram.ext.filters import MessageFilter
-
-
 class TextIs(MessageFilter):
+    """Match reply-keyboard labels after Persian/Telegram text normalization."""
+
     def __init__(self, *options: str):
         super().__init__()
-        self.options = {_norm(o) for o in options}
+        self.options = {normalize_text(o) for o in options}
 
     def filter(self, message) -> bool:
-        return _norm(message.text) in self.options
+        return normalize_text(message.text) in self.options
 
 
 BTN_DEPOSIT = TextIs("➕ واریز دستی")
@@ -97,9 +88,28 @@ BTN_RECEIPT = TextIs("📷 ثبت با رسید")
 BTN_REPORT = TextIs("📊 گزارش ماه")
 BTN_LIST = TextIs("📋 آخرین تراکنش‌ها", "📋 آخرین تراکنشها")
 BTN_CATS = TextIs("🏷 دسته‌ها", "🏷 دستهها")
-BTN_ACCOUNTS = TextIs("🏦 حساب‌ها و بانک‌ها", "🏦 حساب‌ها", "🏦 حسابها", "🏦 حسابها و بانکها", "🏦 حساب‌ها و بانکها")
+BTN_ACCOUNTS = TextIs(
+    "🏦 حساب‌ها و بانک‌ها",
+    "🏦 حساب‌ها",
+    "🏦 حسابها",
+    "🏦 حسابها و بانکها",
+    "🏦 حساب‌ها و بانکها",
+)
 BTN_HELP = TextIs("❓ راهنما")
 BTN_CANCEL = TextIs("❌ انصراف")
+
+# Any main-menu label — used inside conversation states so buttons are not
+# swallowed by "please send amount/text" catch-all handlers.
+BTN_MENU = (
+    BTN_DEPOSIT
+    | BTN_WITHDRAW
+    | BTN_RECEIPT
+    | BTN_REPORT
+    | BTN_LIST
+    | BTN_CATS
+    | BTN_ACCOUNTS
+    | BTN_HELP
+)
 
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -110,19 +120,26 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("UNKNOWN %r", update.effective_message.text if update.effective_message else None)
     await update.effective_message.reply_text(
-        "متوجه نشدم.\n/start یا /ping را بزنید."
+        "متوجه نشدم.\nاز دکمه‌های پایین استفاده کنید یا /start /ping بزنید."
     )
 
 
 def _fallbacks():
+    """Always allow leaving a conversation via /start, cancel, or menu buttons."""
     return [
         CommandHandler("start", manual.cancel_to_start),
         CommandHandler("cancel", manual.cancel),
         MessageHandler(BTN_CANCEL, manual.cancel),
-        MessageHandler(
-            BTN_DEPOSIT | BTN_WITHDRAW | BTN_RECEIPT | BTN_REPORT | BTN_LIST | BTN_CATS | BTN_ACCOUNTS | BTN_HELP,
-            manual.cancel_to_start,
-        ),
+        MessageHandler(BTN_MENU, manual.cancel_to_start),
+    ]
+
+
+def _text_states(*extra_handlers):
+    """State handlers: menu/cancel first, then conversation-specific handlers."""
+    return [
+        MessageHandler(BTN_CANCEL, manual.cancel),
+        MessageHandler(BTN_MENU, manual.cancel_to_start),
+        *extra_handlers,
     ]
 
 
@@ -148,19 +165,26 @@ def build_app() -> Application:
             CommandHandler("withdraw", manual.withdraw_entry),
         ],
         states={
-            ASK_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_amount)],
+            ASK_AMOUNT: _text_states(
+                MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_amount),
+            ),
             ASK_CATEGORY: [
                 CallbackQueryHandler(manual.manual_category_callback, pattern=r"^(cat:|rcancel$)"),
+                MessageHandler(BTN_CANCEL, manual.cancel),
+                MessageHandler(BTN_MENU, manual.cancel_to_start),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, manual.prompt_pick_category),
             ],
-            ASK_DESC: [
+            ASK_DESC: _text_states(
                 MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_desc),
                 CommandHandler("skip", manual.manual_desc),
-            ],
-            ASK_ACCOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_account)],
+            ),
+            ASK_ACCOUNT: _text_states(
+                MessageHandler(filters.TEXT & ~filters.COMMAND, manual.manual_account),
+            ),
         },
         fallbacks=fallbacks,
         allow_reentry=True,
+        name="manual_conv",
     )
 
     receipt_conv = ConversationHandler(
@@ -173,6 +197,8 @@ def build_app() -> Application:
             WAIT_RECEIPT: [
                 MessageHandler(filters.PHOTO, receipt.receipt_photo),
                 MessageHandler(filters.Document.IMAGE, receipt.receipt_photo),
+                MessageHandler(BTN_CANCEL, manual.cancel),
+                MessageHandler(BTN_MENU, manual.cancel_to_start),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receipt.receipt_photo),
             ],
             CONFIRM: [
@@ -180,28 +206,36 @@ def build_app() -> Application:
                     receipt.receipt_callbacks,
                     pattern=r"^(rok|redit_amount|rswitch|rcancel|rcat|rtype:|cat:)",
                 ),
+                MessageHandler(BTN_CANCEL, manual.cancel),
+                MessageHandler(BTN_MENU, manual.cancel_to_start),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, manual.prompt_pick_category),
             ],
             PICK_CATEGORY: [
                 CallbackQueryHandler(receipt.receipt_callbacks, pattern=r"^(cat:|rcancel$)"),
+                MessageHandler(BTN_CANCEL, manual.cancel),
+                MessageHandler(BTN_MENU, manual.cancel_to_start),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, manual.prompt_pick_category),
             ],
-            EDIT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receipt.edit_amount_text)],
+            EDIT_AMOUNT: _text_states(
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receipt.edit_amount_text),
+            ),
         },
         fallbacks=fallbacks
         + [CallbackQueryHandler(receipt.receipt_callbacks, pattern=r"^rcancel$")],
         allow_reentry=True,
+        name="receipt_conv",
     )
 
     account_conv = ConversationHandler(
         entry_points=[CommandHandler("newaccount", manual.new_account_entry)],
         states={
-            ASK_NEW_ACCOUNT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, manual.new_account_name)
-            ],
+            ASK_NEW_ACCOUNT: _text_states(
+                MessageHandler(filters.TEXT & ~filters.COMMAND, manual.new_account_name),
+            ),
         },
         fallbacks=fallbacks,
         allow_reentry=True,
+        name="account_conv",
     )
 
     bank_account_conv = ConversationHandler(
@@ -210,48 +244,59 @@ def build_app() -> Application:
             CommandHandler("addaccount", banking.new_bank_account_entry),
         ],
         states={
-            BA_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, banking.ba_title)],
+            BA_TITLE: _text_states(
+                MessageHandler(filters.TEXT & ~filters.COMMAND, banking.ba_title),
+            ),
             BA_TYPE: [
-                CallbackQueryHandler(banking.ba_type_callback, pattern=r"^(batype:|bacancel$)")
+                CallbackQueryHandler(banking.ba_type_callback, pattern=r"^(batype:|bacancel$)"),
+                MessageHandler(BTN_CANCEL, manual.cancel),
+                MessageHandler(BTN_MENU, manual.cancel_to_start),
             ],
             BA_BANK: [
-                CallbackQueryHandler(banking.ba_bank_callback, pattern=r"^(babank:|bacancel$)")
+                CallbackQueryHandler(banking.ba_bank_callback, pattern=r"^(babank:|bacancel$)"),
+                MessageHandler(BTN_CANCEL, manual.cancel),
+                MessageHandler(BTN_MENU, manual.cancel_to_start),
             ],
-            BA_CARD: [
+            BA_CARD: _text_states(
                 MessageHandler(filters.TEXT & ~filters.COMMAND, banking.ba_card),
                 CommandHandler("skip", banking.ba_card),
-            ],
-            BA_ACCOUNT_NO: [
+            ),
+            BA_ACCOUNT_NO: _text_states(
                 MessageHandler(filters.TEXT & ~filters.COMMAND, banking.ba_account_no),
                 CommandHandler("skip", banking.ba_account_no),
-            ],
-            BA_SHEBA: [
+            ),
+            BA_SHEBA: _text_states(
                 MessageHandler(filters.TEXT & ~filters.COMMAND, banking.ba_sheba),
                 CommandHandler("skip", banking.ba_sheba),
-            ],
-            BA_OPENING: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, banking.ba_opening)
-            ],
+            ),
+            BA_OPENING: _text_states(
+                MessageHandler(filters.TEXT & ~filters.COMMAND, banking.ba_opening),
+            ),
             BA_CONFIRM: [
-                CallbackQueryHandler(banking.ba_confirm_callback, pattern=r"^(baok|bacancel$)")
+                CallbackQueryHandler(banking.ba_confirm_callback, pattern=r"^(baok|bacancel$)"),
+                MessageHandler(BTN_CANCEL, manual.cancel),
+                MessageHandler(BTN_MENU, manual.cancel_to_start),
             ],
         },
         fallbacks=fallbacks + [CallbackQueryHandler(banking.ba_cancel, pattern=r"^bacancel$")],
         allow_reentry=True,
+        name="bank_account_conv",
     )
 
-    # Diagnostic
-    app.add_handler(CommandHandler("ping", ping))
+    # Highest priority: always answer /ping even if something else is stuck.
+    app.add_handler(CommandHandler("ping", ping), group=-1)
 
-    # Core commands FIRST
-    app.add_handler(CommandHandler("start", start.start))
-    app.add_handler(CommandHandler("help", start.help_cmd))
-    app.add_handler(MessageHandler(BTN_HELP, start.help_cmd))
-
+    # Conversations FIRST so /start in fallbacks can end them.
+    # (A top-level /start registered before conversations never clears CH state.)
     app.add_handler(manual_conv)
     app.add_handler(receipt_conv)
     app.add_handler(account_conv)
     app.add_handler(bank_account_conv)
+
+    # Core commands / menu when NOT inside a conversation
+    app.add_handler(CommandHandler("start", start.start))
+    app.add_handler(CommandHandler("help", start.help_cmd))
+    app.add_handler(MessageHandler(BTN_HELP, start.help_cmd))
 
     app.add_handler(CommandHandler("list", manual.list_transactions))
     app.add_handler(MessageHandler(BTN_LIST, manual.list_transactions))
@@ -275,7 +320,7 @@ def main() -> None:
     app = build_app()
     logger.info("Polling start")
     app.run_polling(
-        drop_pending_updates=False,
+        drop_pending_updates=True,
         allowed_updates=["message", "callback_query"],
     )
 
